@@ -4,4 +4,5 @@ var ModuleList = []Module{
 	&Version{},
 	&Auth{},
 	&Nodes{},
+	&Network{},
 }
