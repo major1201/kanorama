@@ -20,10 +20,13 @@ import (
 type Nodes struct {
 	ModuleAbstract
 
-	nodeCount        int
-	kubeletVersions  map[string]int
-	containerRuntime map[string]int
-	kernelVersions   map[string]int
+	nodeCount          int
+	unschedulableCount int
+	notReadyCount      int
+	masterCount        int
+	kubeletVersions    map[string]int
+	containerRuntime   map[string]int
+	kernelVersions     map[string]int
 
 	totalCPUMilli    int64
 	totalMemoryBytes int64
@@ -71,6 +74,9 @@ func (m *Nodes) Run() error {
 	}
 
 	m.nodeCount = 0
+	m.unschedulableCount = 0
+	m.notReadyCount = 0
+	m.masterCount = 0
 	m.kubeletVersions = make(map[string]int)
 	m.containerRuntime = make(map[string]int)
 	m.kernelVersions = make(map[string]int)
@@ -92,6 +98,15 @@ func (m *Nodes) Run() error {
 			continue
 		}
 		m.nodeCount++
+		if node.Spec.Unschedulable {
+			m.unschedulableCount++
+		}
+		if !isNodeReady(node) {
+			m.notReadyCount++
+		}
+		if isMasterNode(node) {
+			m.masterCount++
+		}
 
 		info := node.Status.NodeInfo
 
@@ -154,9 +169,7 @@ func (m *Nodes) Run() error {
 func (m Nodes) Print(w io.Writer) error {
 	var buf strings.Builder
 
-	fmt.Fprintf(&buf, "Nodes:\n")
-	fmt.Fprintf(&buf, "  Count: %d\n", m.nodeCount)
-
+	writeNodeCountTable(&buf, m)
 	writeCountTable(&buf, "Kubelet Versions", "Version", m.kubeletVersions)
 	writeCountTable(&buf, "Container Runtimes", "Runtime", m.containerRuntime)
 	writeCountTable(&buf, "Kernel Versions", "Kernel Version", m.kernelVersions)
@@ -184,6 +197,27 @@ func containerRuntimeName(v string) string {
 		return v[:i]
 	}
 	return v
+}
+
+func isNodeReady(node *corev1.Node) bool {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// isMasterNode reports whether the node has a control-plane/master role label.
+// Kubernetes v1.20+ uses node-role.kubernetes.io/control-plane; older
+// clusters use node-role.kubernetes.io/master.
+func isMasterNode(node *corev1.Node) bool {
+	for key := range node.Labels {
+		if key == "node-role.kubernetes.io/control-plane" || key == "node-role.kubernetes.io/master" {
+			return true
+		}
+	}
+	return false
 }
 
 // wellKnownNodeLabels are the node classification labels defined in
@@ -218,6 +252,17 @@ func formatBytes(b int64) string {
 		}
 	}
 	return fmt.Sprintf("%dB", b)
+}
+
+func writeNodeCountTable(buf *strings.Builder, m Nodes) {
+	fmt.Fprintf(buf, "Node Count:\n")
+	rows := [][]string{
+		{"Total", strconv.Itoa(m.nodeCount)},
+		{"Unschedulable", strconv.Itoa(m.unschedulableCount)},
+		{"Not Ready", strconv.Itoa(m.notReadyCount)},
+		{"Master", strconv.Itoa(m.masterCount)},
+	}
+	renderTable(buf, []string{"Metric", "Count"}, rows)
 }
 
 func writeCountTable(buf *strings.Builder, title, itemHeader string, counts map[string]int) {
