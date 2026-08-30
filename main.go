@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"os"
@@ -27,11 +28,12 @@ func newRootCommand() *cobra.Command {
 		listModules    bool
 		kubeconfigPath string
 		contextName    string
+		htmlOutput     string
 	)
 
 	cmd := &cobra.Command{
 		Use:          "kanorama",
-		Short:        "Kubernetes cluster report generator",
+		Short:        "Kubernetes panorama",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			modules.SetClientConfig(kubeconfigPath, contextName)
@@ -47,14 +49,30 @@ func newRootCommand() *cobra.Command {
 
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
+
+			reports := make([]moduleReport, 0, len(selected))
 			for _, mo := range selected {
 				mo.Init(ctx)
 				name := mo.Name()
 				if err := mo.Run(); err != nil {
 					slog.Error("run module failed", "name", name, "error", err)
 				}
-				fmt.Fprintf(out, "======================= %s =======================\n", name)
-				mo.Print(out)
+				var buf strings.Builder
+				mo.Print(&buf)
+				reports = append(reports, moduleReport{Name: name, Content: buf.String()})
+			}
+
+			if htmlOutput != "" {
+				if err := writeHTMLReport(htmlOutput, reports); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "Report written to %s\n", htmlOutput)
+				return nil
+			}
+
+			for _, r := range reports {
+				fmt.Fprintf(out, "======================= %s =======================\n", r.Name)
+				io.WriteString(out, r.Content)
 			}
 			return nil
 		},
@@ -66,6 +84,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().BoolVarP(&listModules, "list-modules", "L", false, "list all modules and whether they are enabled by default")
 	cmd.Flags().StringVar(&kubeconfigPath, "kubeconfig", "", "path to the kubeconfig file")
 	cmd.Flags().StringVar(&contextName, "context", "", "name of the kubeconfig context to use")
+	cmd.Flags().StringVar(&htmlOutput, "html", "", "write the report to an HTML file with one tab per module")
 
 	return cmd
 }
@@ -159,4 +178,70 @@ func printModuleList(w io.Writer) error {
 		fmt.Fprintf(tw, "%s\t%s\t%t\n", mo.ID(), mo.Name(), mo.EnableByDefault())
 	}
 	return tw.Flush()
+}
+
+type moduleReport struct {
+	Name    string
+	Content string
+}
+
+func writeHTMLReport(path string, reports []moduleReport) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n")
+	b.WriteString("<title>Kanorama Report</title>\n")
+	b.WriteString(`<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; color: #1f2328; }
+.tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid #d0d7de; background: #f6f8fa; position: sticky; top: 0; }
+.tab { padding: 10px 16px; cursor: pointer; border: none; background: none; font-size: 14px; color: #24292f; }
+.tab:hover { background: #eaeef2; }
+.tab.active { box-shadow: inset 0 -2px 0 #0969da; color: #0969da; font-weight: 600; }
+.panel { display: none; padding: 16px; }
+.panel.active { display: block; }
+pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; line-height: 1.45; overflow-x: auto; margin: 0; white-space: pre; }
+</style>
+</head>
+<body>
+`)
+
+	b.WriteString("<div class=\"tabs\">\n")
+	for i, r := range reports {
+		fmt.Fprintf(&b, "  <button class=\"tab%s\" id=\"tab-%d\" onclick=\"showTab(%d, this)\">%s</button>\n",
+			activeClass(i), i, i, html.EscapeString(r.Name))
+	}
+	b.WriteString("</div>\n")
+
+	for i, r := range reports {
+		fmt.Fprintf(&b, "<div class=\"panel%s\" id=\"panel-%d\"><pre>%s</pre></div>\n",
+			activeClass(i), i, html.EscapeString(r.Content))
+	}
+
+	b.WriteString(`<script>
+function showTab(i, el) {
+  var tabs = document.querySelectorAll('.tab');
+  for (var t = 0; t < tabs.length; t++) tabs[t].classList.remove('active');
+  var panels = document.querySelectorAll('.panel');
+  for (var p = 0; p < panels.length; p++) panels[p].classList.remove('active');
+  el.classList.add('active');
+  document.getElementById('panel-' + i).classList.add('active');
+}
+</script>
+</body>
+</html>
+`)
+
+	_, err = io.WriteString(f, b.String())
+	return err
+}
+
+func activeClass(i int) string {
+	if i == 0 {
+		return " active"
+	}
+	return ""
 }
