@@ -86,6 +86,8 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&contextName, "context", "", "name of the kubeconfig context to use")
 	cmd.Flags().StringVar(&htmlOutput, "html", "", "write the report to an HTML file with one tab per module")
 
+	cmd.SetHelpTemplate(cmd.HelpTemplate() + "\nModules:\n" + moduleListString())
+
 	return cmd
 }
 
@@ -172,12 +174,23 @@ func selectModules(onlyIDs, enableIDs, disableIDs []string) ([]modules.Module, e
 }
 
 func printModuleList(w io.Writer) error {
+	writeModuleList(w)
+	return nil
+}
+
+func writeModuleList(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tName\tEnabled by default")
 	for _, mo := range modules.ModuleList {
 		fmt.Fprintf(tw, "%s\t%s\t%t\n", mo.ID(), mo.Name(), mo.EnableByDefault())
 	}
-	return tw.Flush()
+	tw.Flush()
+}
+
+func moduleListString() string {
+	var b strings.Builder
+	writeModuleList(&b)
+	return b.String()
 }
 
 type moduleReport struct {

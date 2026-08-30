@@ -5,9 +5,13 @@ var ModuleList = []Module{
 	&Auth{},
 	&Nodes{},
 	&Network{},
+	&Namespaces{},
 	&Pods{},
 	&DaemonSet{},
 	&Storage{},
 	&Helm{},
 	&CRD{},
+	&Webhooks{},
+	&Certificates{},
+	&Events{},
 }
