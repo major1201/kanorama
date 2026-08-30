@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"text/tabwriter"
 
-	"github.com/major1201/dante/pkg/log"
 	"github.com/major1201/kanorama/modules"
 	"github.com/spf13/cobra"
 )
@@ -51,7 +51,7 @@ func newRootCommand() *cobra.Command {
 				mo.Init(ctx)
 				name := mo.Name()
 				if err := mo.Run(); err != nil {
-					log.L.Error(err, "run module failed", "name", name)
+					slog.Error("run module failed", "name", name, "error", err)
 				}
 				fmt.Fprintf(out, "======================= %s =======================\n", name)
 				mo.Print(out)

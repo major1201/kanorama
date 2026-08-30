@@ -2,10 +2,7 @@ module github.com/major1201/kanorama
 
 go 1.27
 
-replace github.com/major1201/dante => /Users/major/project/github.com/major1201/dante
-
 require (
-	github.com/major1201/dante v0.0.0-00010101000000-000000000000
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/olekukonko/tablewriter v1.1.4
 	github.com/spf13/cobra v1.8.1
@@ -27,7 +24,6 @@ require (
 	github.com/go-openapi/jsonreference v0.20.0 // indirect
 	github.com/go-openapi/swag v0.19.14 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/glog v1.1.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/gnostic v0.5.7-v3refs // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
