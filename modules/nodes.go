@@ -1,7 +1,6 @@
 package modules
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -14,7 +13,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Nodes struct {
@@ -58,17 +56,9 @@ func (m Nodes) EnableByDefault() bool {
 }
 
 func (m *Nodes) Run() error {
-	clientset, err := newClientset()
-	if err != nil {
-		return err
-	}
+	ctx := m.getContext()
 
-	ctx := m.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	nodes, err := m.getCache().Nodes(ctx)
 	if err != nil {
 		return err
 	}

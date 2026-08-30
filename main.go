@@ -25,6 +25,8 @@ func newRootCommand() *cobra.Command {
 		enableModules  string
 		disableModules string
 		listModules    bool
+		kubeconfigPath string
+		contextName    string
 	)
 
 	cmd := &cobra.Command{
@@ -32,6 +34,8 @@ func newRootCommand() *cobra.Command {
 		Short:        "Kubernetes cluster report generator",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			modules.SetClientConfig(kubeconfigPath, contextName)
+
 			if listModules {
 				return printModuleList(cmd.OutOrStdout())
 			}
@@ -56,10 +60,12 @@ func newRootCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&onlyModules, "modules", "", "comma-separated list of module IDs to run (replaces the default-enabled set)")
-	cmd.Flags().StringVar(&enableModules, "enable-modules", "", "comma-separated list of module IDs to enable (in addition to default-enabled modules)")
-	cmd.Flags().StringVar(&disableModules, "disable-modules", "", "comma-separated list of module IDs to disable")
-	cmd.Flags().BoolVar(&listModules, "list-modules", false, "list all modules and whether they are enabled by default")
+	cmd.Flags().StringVarP(&onlyModules, "modules", "m", "", "comma-separated list of module IDs to run (replaces the default-enabled set)")
+	cmd.Flags().StringVarP(&enableModules, "enable-modules", "E", "", "comma-separated list of module IDs to enable (in addition to default-enabled modules)")
+	cmd.Flags().StringVarP(&disableModules, "disable-modules", "D", "", "comma-separated list of module IDs to disable")
+	cmd.Flags().BoolVarP(&listModules, "list-modules", "L", false, "list all modules and whether they are enabled by default")
+	cmd.Flags().StringVar(&kubeconfigPath, "kubeconfig", "", "path to the kubeconfig file")
+	cmd.Flags().StringVar(&contextName, "context", "", "name of the kubeconfig context to use")
 
 	return cmd
 }

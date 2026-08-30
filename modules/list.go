@@ -5,4 +5,9 @@ var ModuleList = []Module{
 	&Auth{},
 	&Nodes{},
 	&Network{},
+	&Pods{},
+	&DaemonSet{},
+	&Storage{},
+	&Helm{},
+	&CRD{},
 }
