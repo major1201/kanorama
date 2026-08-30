@@ -6,6 +6,7 @@ var ModuleList = []Module{
 	&Nodes{},
 	&Kubelet{},
 	&Network{},
+	&Ingresses{},
 	&Namespaces{},
 	&Pods{},
 	&DaemonSet{},
