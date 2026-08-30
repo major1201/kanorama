@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -19,6 +21,7 @@ type Network struct {
 	podCIDRs     []string
 	serviceCIDRs []string
 	dnsDomain    string
+	dnsServices  []dnsServiceInfo
 }
 
 func (m Network) Name() string {
@@ -136,6 +139,14 @@ func (m *Network) Run() error {
 	m.serviceCIDRs = append(m.serviceCIDRs, kubeadmService...)
 	m.dnsDomain = dnsDomain
 
+	// Trace the cluster DNS provider from the actual 53/UDP+TCP services and
+	// their backing pods, rather than guessing from well-known names.
+	var pods *corev1.PodList
+	if cachedPods, err := m.getCache().Pods(ctx); err == nil {
+		pods = cachedPods
+	}
+	m.dnsServices = detectDNSServices(clientset, ctx, pods)
+
 	m.cni = make([]string, 0, len(seen))
 	for cni := range seen {
 		m.cni = append(m.cni, cni)
@@ -206,6 +217,139 @@ func uniqueSortedCIDRs(cidrs []string) []string {
 	return out
 }
 
+type dnsServiceInfo struct {
+	namespace string
+	name      string
+	clusterIP string
+	ports     string
+	provider  string
+	endpoints int
+}
+
+// detectDNSServices finds every Service exposing port 53 (UDP or TCP) and
+// traces its endpoints back to the backing pods to determine who actually
+// serves cluster DNS.
+func detectDNSServices(clientset kubernetes.Interface, ctx context.Context, pods *corev1.PodList) []dnsServiceInfo {
+	svcList, err := clientset.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+
+	podByRef := make(map[string]*corev1.Pod)
+	if pods != nil {
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			podByRef[pod.Namespace+"/"+pod.Name] = pod
+		}
+	}
+
+	var out []dnsServiceInfo
+	for i := range svcList.Items {
+		svc := &svcList.Items[i]
+
+		ports := make([]string, 0, len(svc.Spec.Ports))
+		for _, p := range svc.Spec.Ports {
+			if p.Port != 53 {
+				continue
+			}
+			proto := string(p.Protocol)
+			if proto == "" {
+				proto = "TCP"
+			}
+			ports = append(ports, fmt.Sprintf("53/%s", proto))
+		}
+		if len(ports) == 0 {
+			continue
+		}
+		sort.Strings(ports)
+
+		info := dnsServiceInfo{
+			namespace: svc.Namespace,
+			name:      svc.Name,
+			clusterIP: svc.Spec.ClusterIP,
+			ports:     strings.Join(ports, ","),
+		}
+
+		eps, err := clientset.CoreV1().Endpoints(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{})
+		if err == nil {
+			providers := make(map[string]bool)
+			ips := make(map[string]bool)
+			for _, subset := range eps.Subsets {
+				for _, addr := range subset.Addresses {
+					ips[addr.IP] = true
+					if addr.TargetRef != nil && addr.TargetRef.Kind == "Pod" {
+						if pod := podByRef[addr.TargetRef.Namespace+"/"+addr.TargetRef.Name]; pod != nil {
+							if provider := dnsProvider(pod); provider != "" {
+								providers[provider] = true
+							}
+						}
+					}
+				}
+			}
+			info.endpoints = len(ips)
+			info.provider = strings.Join(sortedStringSet(providers), ",")
+		}
+
+		out = append(out, info)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].namespace != out[j].namespace {
+			return out[i].namespace < out[j].namespace
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+// dnsProvider identifies the DNS software backing a pod from its container
+// image and command line, without depending on service or deployment names.
+func dnsProvider(pod *corev1.Pod) string {
+	containers := make([]corev1.Container, 0, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
+	containers = append(containers, pod.Spec.Containers...)
+	containers = append(containers, pod.Spec.InitContainers...)
+	for i := range containers {
+		c := &containers[i]
+
+		img := strings.ToLower(c.Image)
+		switch {
+		case strings.Contains(img, "coredns"):
+			return "CoreDNS"
+		case strings.Contains(img, "kube-dns") || strings.Contains(img, "k8s-dns"):
+			return "kube-dns"
+		case strings.Contains(img, "node-local-dns") || strings.Contains(img, "node-cache"):
+			return "NodeLocal DNSCache"
+		}
+
+		for _, arg := range c.Command {
+			if strings.Contains(strings.ToLower(arg), "coredns") {
+				return "CoreDNS"
+			}
+			if strings.Contains(strings.ToLower(arg), "kube-dns") {
+				return "kube-dns"
+			}
+		}
+		for _, arg := range c.Args {
+			if strings.Contains(strings.ToLower(arg), "coredns") {
+				return "CoreDNS"
+			}
+			if strings.Contains(strings.ToLower(arg), "kube-dns") {
+				return "kube-dns"
+			}
+		}
+	}
+	return ""
+}
+
+func sortedStringSet(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (m Network) Print(w io.Writer) error {
 	var buf strings.Builder
 
@@ -241,6 +385,21 @@ func (m Network) Print(w io.Writer) error {
 		for _, c := range m.serviceCIDRs {
 			fmt.Fprintf(&buf, "  - %s\n", c)
 		}
+	}
+
+	buf.WriteString("\nCluster DNS:\n")
+	if len(m.dnsServices) == 0 {
+		buf.WriteString("  (no service exposing port 53 found)\n")
+	} else {
+		rows := make([][]string, 0, len(m.dnsServices))
+		for _, s := range m.dnsServices {
+			provider := s.provider
+			if provider == "" {
+				provider = "(unknown)"
+			}
+			rows = append(rows, []string{s.namespace, s.name, s.clusterIP, s.ports, provider, strconv.Itoa(s.endpoints)})
+		}
+		renderTable(&buf, []string{"Namespace", "Service", "ClusterIP", "Ports", "Provider", "Endpoints"}, rows)
 	}
 
 	_, err := io.WriteString(w, buf.String())

@@ -2,8 +2,9 @@
 
 Kanorama (Kubernetes + Panorama) is a read-only CLI that builds a cluster-wide
 report from a Kubernetes cluster, helping you understand its composition from
-multiple angles: version, authentication, nodes, networking, namespaces,
-workloads, storage, Helm releases, CRDs, webhooks, certificates, and events.
+multiple angles: version, authentication, nodes, kubelet configuration,
+networking, namespaces, workloads, storage, Helm releases, CRDs, webhooks,
+certificates, and events.
 
 It talks directly to the Kubernetes API with your kubeconfig (or in-cluster
 service account), so it requires no agents, no metrics server, and no
@@ -104,7 +105,8 @@ CNI:
 | `version` | Version | Prints the Kubernetes API server version. |
 | `auth` | Auth | Equivalent to `kubectl auth whoami`, plus a summary of effective permissions across all namespaces. |
 | `nodes` | Nodes | Node counts (total / unschedulable / not-ready / control-plane), kubelet / container-runtime / kernel version distribution, capacity & allocatable resources, and well-known labels. Virtual-kubelet nodes are excluded. |
-| `network` | Network | Detects the CNI(s) in use via node annotations, DaemonSet names, and container images. |
+| `kubelet` | Kubelet | Prints the cluster's KubeletConfiguration from the `kubelet-config` ConfigMap in `kube-system` (kubeadm and kubeadm-based distros). |
+| `network` | Network | Detects the CNI(s) in use via node annotations, DaemonSet names, and container images, and reports the DNS domain plus pod/service CIDRs from `kubeadm-config`. |
 | `namespaces` | Namespaces | Lists Namespaces with status, pod counts, aggregated CPU/memory requests & limits, and ResourceQuota details. |
 | `pods` | Pods | Pod status summary, cluster request/limit usage versus allocatable, and Top 5 kinds & namespaces by pod count, CPU, memory, and extended resources (e.g. GPUs). |
 | `daemonset` | DaemonSet | Lists every DaemonSet with namespace, name, desired/current/ready counts, node selector, and resource requests/limits. |
@@ -115,8 +117,8 @@ CNI:
 | `certificates` | Certificates | Checks TLS Secrets subject, expiry, key validity, and certificate/key match. |
 | `events` | Events | Event totals by type, Top 10 reasons and involved kinds, and recent warnings. Disabled by default. |
 
-Use `kanorama -L` to see the current module list and their default-enabled
-status.
+Use `kanorama -L` (or `kanorama --help`) to see the current module list and
+their default-enabled status.
 
 ## How module selection works
 
