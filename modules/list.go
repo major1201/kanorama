@@ -4,6 +4,7 @@ var ModuleList = []Module{
 	&Version{},
 	&Auth{},
 	&Nodes{},
+	&Kubelet{},
 	&Network{},
 	&Namespaces{},
 	&Pods{},
