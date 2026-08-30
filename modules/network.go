@@ -7,13 +7,18 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 type Network struct {
 	ModuleAbstract
 
-	cni []string
+	cni          []string
+	podCIDRs     []string
+	serviceCIDRs []string
+	dnsDomain    string
 }
 
 func (m Network) Name() string {
@@ -96,7 +101,8 @@ func (m *Network) Run() error {
 	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for i := range nodes.Items {
-			for key := range nodes.Items[i].Annotations {
+			node := &nodes.Items[i]
+			for key := range node.Annotations {
 				for prefix, cni := range cniNodeAnnotationPrefixes {
 					if strings.HasPrefix(key, prefix) {
 						seen[cni] = true
@@ -122,11 +128,22 @@ func (m *Network) Run() error {
 		}
 	}
 
+	// kubeadm clusters store the pod/service subnets and DNS domain in the
+	// kubeadm-config ConfigMap. This is also how many managed kubeadm-based
+	// distros expose them.
+	kubeadmPod, kubeadmService, dnsDomain := kubeadmNetworkConfig(clientset, ctx)
+	m.podCIDRs = append(m.podCIDRs, kubeadmPod...)
+	m.serviceCIDRs = append(m.serviceCIDRs, kubeadmService...)
+	m.dnsDomain = dnsDomain
+
 	m.cni = make([]string, 0, len(seen))
 	for cni := range seen {
 		m.cni = append(m.cni, cni)
 	}
 	sort.Strings(m.cni)
+
+	m.podCIDRs = uniqueSortedCIDRs(m.podCIDRs)
+	m.serviceCIDRs = uniqueSortedCIDRs(m.serviceCIDRs)
 	return nil
 }
 
@@ -139,6 +156,56 @@ func detectCNIFromImage(image string, seen map[string]bool) {
 	}
 }
 
+type kubeadmClusterConfiguration struct {
+	Networking struct {
+		PodSubnet     string `yaml:"podSubnet"`
+		ServiceSubnet string `yaml:"serviceSubnet"`
+		DNSDomain     string `yaml:"dnsDomain"`
+	} `yaml:"networking"`
+}
+
+func kubeadmNetworkConfig(clientset kubernetes.Interface, ctx context.Context) (podSubnets, serviceSubnets []string, dnsDomain string) {
+	cm, err := clientset.CoreV1().ConfigMaps("kube-system").Get(ctx, "kubeadm-config", metav1.GetOptions{})
+	if err != nil {
+		return nil, nil, ""
+	}
+	raw := cm.Data["ClusterConfiguration"]
+	if raw == "" {
+		return nil, nil, ""
+	}
+
+	var cfg kubeadmClusterConfiguration
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil, nil, ""
+	}
+	for _, s := range strings.Split(cfg.Networking.PodSubnet, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			podSubnets = append(podSubnets, s)
+		}
+	}
+	for _, s := range strings.Split(cfg.Networking.ServiceSubnet, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			serviceSubnets = append(serviceSubnets, s)
+		}
+	}
+	return podSubnets, serviceSubnets, cfg.Networking.DNSDomain
+}
+
+func uniqueSortedCIDRs(cidrs []string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(cidrs))
+	for _, c := range cidrs {
+		c = strings.TrimSpace(c)
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (m Network) Print(w io.Writer) error {
 	var buf strings.Builder
 
@@ -148,6 +215,31 @@ func (m Network) Print(w io.Writer) error {
 	} else {
 		for _, cni := range m.cni {
 			fmt.Fprintf(&buf, "  - %s\n", cni)
+		}
+	}
+
+	buf.WriteString("\nDNS Domain:\n")
+	if m.dnsDomain == "" {
+		buf.WriteString("  (unknown)\n")
+	} else {
+		fmt.Fprintf(&buf, "  %s\n", m.dnsDomain)
+	}
+
+	buf.WriteString("\nPod CIDRs:\n")
+	if len(m.podCIDRs) == 0 {
+		buf.WriteString("  (unknown)\n")
+	} else {
+		for _, c := range m.podCIDRs {
+			fmt.Fprintf(&buf, "  - %s\n", c)
+		}
+	}
+
+	buf.WriteString("\nService CIDRs:\n")
+	if len(m.serviceCIDRs) == 0 {
+		buf.WriteString("  (unknown)\n")
+	} else {
+		for _, c := range m.serviceCIDRs {
+			fmt.Fprintf(&buf, "  - %s\n", c)
 		}
 	}
 
