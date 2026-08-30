@@ -1,14 +1,12 @@
 package modules
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
-	"text/tabwriter"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authenticationv1alpha1 "k8s.io/api/authentication/v1alpha1"
@@ -231,18 +229,20 @@ func nonResourceRuleKey(r authorizationv1.NonResourceRule) string {
 }
 
 func (m Auth) Print(w io.Writer) error {
-	var buf bytes.Buffer
-	buf.WriteString("Auth:\n")
+	var buf strings.Builder
 
 	if m.userInfo != nil {
 		ui := m.userInfo
-		buf.WriteString("  User:\n")
-		fmt.Fprintf(&buf, "    Username: %s\n", ui.Username)
+		buf.WriteString("\nUser:\n")
+
+		rows := [][]string{
+			{"Username", valueOrDash(ui.Username)},
+		}
 		if ui.UID != "" {
-			fmt.Fprintf(&buf, "    UID: %s\n", ui.UID)
+			rows = append(rows, []string{"UID", ui.UID})
 		}
 		if len(ui.Groups) > 0 {
-			fmt.Fprintf(&buf, "    Groups: %v\n", ui.Groups)
+			rows = append(rows, []string{"Groups", strings.Join(ui.Groups, ", ")})
 		}
 		if len(ui.Extra) > 0 {
 			keys := make([]string, 0, len(ui.Extra))
@@ -251,57 +251,84 @@ func (m Auth) Print(w io.Writer) error {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				fmt.Fprintf(&buf, "    Extra: %s=%v\n", k, ui.Extra[k])
+				rows = append(rows, []string{"Extra[" + k + "]", strings.Join(ui.Extra[k], ", ")})
 			}
 		}
+		renderTable(&buf, []string{"Field", "Value"}, rows)
 	} else {
-		buf.WriteString("  User: unavailable\n")
+		buf.WriteString("\nUser: unavailable\n")
 		if m.whoAmIErr != nil {
-			fmt.Fprintf(&buf, "    error: %v\n", m.whoAmIErr)
+			fmt.Fprintf(&buf, "  error: %v\n", m.whoAmIErr)
 		}
 	}
 
 	if m.permErr != nil {
-		buf.WriteString("  Permissions: unavailable\n")
-		fmt.Fprintf(&buf, "    error: %v\n", m.permErr)
-		_, err := w.Write(buf.Bytes())
+		buf.WriteString("\nPermissions: unavailable\n")
+		fmt.Fprintf(&buf, "  error: %v\n", m.permErr)
+		_, err := io.WriteString(w, buf.String())
 		return err
 	}
 
 	status := m.permStatus
 	if status == nil {
-		buf.WriteString("  Permissions: unavailable\n")
-		_, err := w.Write(buf.Bytes())
+		buf.WriteString("\nPermissions: unavailable\n")
+		_, err := io.WriteString(w, buf.String())
 		return err
 	}
+
+	buf.WriteString("\nPermissions:\n")
 	if status.Incomplete {
 		if status.EvaluationError != "" {
-			fmt.Fprintf(&buf, "  Permissions: incomplete (%s)\n", status.EvaluationError)
+			fmt.Fprintf(&buf, "  incomplete (%s)\n", status.EvaluationError)
 		} else {
-			buf.WriteString("  Permissions: incomplete\n")
+			buf.WriteString("  incomplete\n")
 		}
 	}
 
-	buf.WriteString("  Resource Rules:\n")
-	tw := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "    APIGroups\tResources\tResource Names\tVerbs")
-	for _, r := range status.ResourceRules {
-		fmt.Fprintf(tw, "    %q\t%q\t%q\t%q\n", r.APIGroups, r.Resources, r.ResourceNames, r.Verbs)
-	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-
-	buf.WriteString("  Non-Resource Rules:\n")
-	tw = tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "    Verbs\tNon-Resource URLs")
-	for _, r := range status.NonResourceRules {
-		fmt.Fprintf(tw, "    %q\t%q\n", r.Verbs, r.NonResourceURLs)
-	}
-	if err := tw.Flush(); err != nil {
-		return err
+	buf.WriteString("\nResource Rules:\n")
+	if len(status.ResourceRules) == 0 {
+		buf.WriteString("(none)\n")
+	} else {
+		rows := make([][]string, 0, len(status.ResourceRules))
+		for _, r := range status.ResourceRules {
+			rows = append(rows, []string{
+				joinOrDash(r.APIGroups),
+				joinOrDash(r.Resources),
+				joinOrDash(r.ResourceNames),
+				joinOrDash(r.Verbs),
+			})
+		}
+		renderTable(&buf, []string{"APIGroups", "Resources", "Resource Names", "Verbs"}, rows)
 	}
 
-	_, err := w.Write(buf.Bytes())
+	buf.WriteString("\nNon-Resource Rules:\n")
+	if len(status.NonResourceRules) == 0 {
+		buf.WriteString("(none)\n")
+	} else {
+		rows := make([][]string, 0, len(status.NonResourceRules))
+		for _, r := range status.NonResourceRules {
+			rows = append(rows, []string{
+				joinOrDash(r.Verbs),
+				joinOrDash(r.NonResourceURLs),
+			})
+		}
+		renderTable(&buf, []string{"Verbs", "Non-Resource URLs"}, rows)
+	}
+
+	_, err := io.WriteString(w, buf.String())
 	return err
+}
+
+func valueOrDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func joinOrDash(values []string) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	return strings.Join(values, ",")
 }
