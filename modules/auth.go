@@ -3,6 +3,7 @@ package modules
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -65,12 +66,52 @@ func (m *Auth) Run() error {
 }
 
 func (m *Auth) loadWhoAmI(ctx context.Context, clientset kubernetes.Interface) error {
-	review, err := clientset.AuthenticationV1alpha1().SelfSubjectReviews().Create(ctx, &authenticationv1alpha1.SelfSubjectReview{}, metav1.CreateOptions{})
-	if err != nil {
-		return err
+	// Prefer the stable v1 API (served by Kubernetes 1.28+). Older clusters
+	// only serve v1alpha1, so fall back when v1 is unavailable.
+	ui, err := selfSubjectReviewV1(ctx, clientset)
+	if err == nil {
+		m.userInfo = ui
+		return nil
+	}
+
+	review, aErr := clientset.AuthenticationV1alpha1().SelfSubjectReviews().Create(ctx, &authenticationv1alpha1.SelfSubjectReview{}, metav1.CreateOptions{})
+	if aErr != nil {
+		return fmt.Errorf("v1: %v; v1alpha1: %v", err, aErr)
 	}
 	m.userInfo = &review.Status.UserInfo
 	return nil
+}
+
+// selfSubjectReviewV1 calls authentication.k8s.io/v1 SelfSubjectReview. The
+// k8s.io/api v0.26.0 dependency predates the v1 SelfSubjectReview type, so the
+// request is issued through the REST client instead of a typed client.
+type selfSubjectReviewV1Result struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Status            selfSubjectReviewStatusV1 `json:"status,omitempty"`
+}
+
+type selfSubjectReviewStatusV1 struct {
+	UserInfo authenticationv1.UserInfo `json:"userInfo,omitempty"`
+}
+
+func selfSubjectReviewV1(ctx context.Context, clientset kubernetes.Interface) (*authenticationv1.UserInfo, error) {
+	body := []byte(`{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview"}`)
+	data, err := clientset.AuthenticationV1().RESTClient().Post().
+		AbsPath("/apis/authentication.k8s.io/v1/selfsubjectreviews").
+		SetHeader("Content-Type", "application/json").
+		Body(body).
+		Do(ctx).
+		Raw()
+	if err != nil {
+		return nil, err
+	}
+
+	var result selfSubjectReviewV1Result
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return &result.Status.UserInfo, nil
 }
 
 func (m *Auth) loadPermissions(ctx context.Context, clientset kubernetes.Interface) error {
